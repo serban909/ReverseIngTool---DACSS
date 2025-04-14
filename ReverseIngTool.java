@@ -1,7 +1,10 @@
 import java.io.FileWriter;
 import java.io.PrintWriter;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.Collections;
@@ -132,6 +135,66 @@ class FormatterFactory
     }
 }
 
+class Relationship
+{
+    public enum Type {
+        ASSOCIATION, EXTENDS, IMPLEMENTS
+    };
+
+    public final String from;
+    public final String to;
+    public final Type type;
+
+    public Relationship(String from, String to, Type type) 
+    {
+        this.from = from;
+        this.to = to;
+        this.type=type;
+    }
+
+    public String toYumlString()
+    {
+        String arrow;
+        switch(type)
+        {
+            case EXTENDS:
+                arrow= "^-";
+                break;
+            case IMPLEMENTS:
+                arrow= "^-.-";
+                break;
+            case ASSOCIATION:
+                arrow= "->";
+                break;
+            default:
+                throw new RuntimeException("Unexpected relationship type");
+        };
+
+        return "["+from + "]" + arrow + "[" + to+ "]";
+    }
+
+    public String toPlantUmlString()
+    {
+        String arrow;
+        switch (type) 
+        {
+            case EXTENDS:
+                arrow= " <|-- ";
+                break;
+            case IMPLEMENTS:
+                arrow= " <|.. ";
+                break;
+            case ASSOCIATION:
+                arrow=" --> ";
+                break;
+            default:
+                throw new RuntimeException("Unexpected relationship type");
+        };
+
+        return from + arrow + to + "\n";
+    }
+}
+
 class ClassAnalyzer
 {
     private final List<Class<?>> classes;
@@ -152,6 +215,9 @@ class ClassAnalyzer
     public List<DiagramElement> analyze()
     {
         List<DiagramElement> elements = new ArrayList<>();
+        Map<String, DiagramElement> elementMap = new HashMap<>();
+        List<Relationship> relationships = new ArrayList<>();
+
         for( Class<?> clazz : classes )
         {
             if(shouldIgnore(clazz)) continue;
@@ -165,19 +231,96 @@ class ClassAnalyzer
                 for(Field field : clazz.getDeclaredFields())
                 {
                     element.addField("+"+field.getName()+":"+field.getType().getSimpleName());
-                }
 
+                    Class<?> fieldType=field.getType();
+                    if(!shouldIgnore(fieldType))
+                    {
+                        String assocTo=fullyQualifiedNames ? fieldType.getName():fieldType.getSimpleName();
+                        relationships.add(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION));
+                    }
+
+                    Type genericType=field.getGenericType();
+                    if(genericType instanceof ParameterizedType)
+                    {
+                        ParameterizedType pt = (ParameterizedType) genericType;
+                        for(Type actualType : pt.getActualTypeArguments())
+                        {
+                            if(actualType instanceof Class<?>)
+                            {
+                                Class<?> actualClass = (Class<?>) actualType;
+                                if(!shouldIgnore(actualClass))
+                                {
+                                    String assocTo=fullyQualifiedNames ? actualClass.getName():actualClass.getSimpleName();
+                                    relationships.add(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION));
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if(showMethods)
             {
                 for(Method method : clazz.getDeclaredMethods())
                 {
-                    element.addMethod("+"+method.getName() + "() :" + method.getReturnType().getSimpleName());
+                    
+                    StringBuilder methodSignature = new StringBuilder("+" + method.getName() + "(");
+                    Class<?>[] paramTypes = method.getParameterTypes();
+
+                    for (int i = 0; i < paramTypes.length; i++) 
+                    {
+                        methodSignature.append(paramTypes[i].getSimpleName());
+                        if (i < paramTypes.length - 1) methodSignature.append(", ");
+                    }
+
+                    methodSignature.append("):" + method.getReturnType().getSimpleName());
+                    element.addMethod(methodSignature.toString());
+
+                    for(Class<?> paramType : method.getParameterTypes())
+                    {
+                        if(!shouldIgnore(paramType))
+                        {
+                            String assocTo=fullyQualifiedNames ? paramType.getName():paramType.getSimpleName();
+                            relationships.add(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION));
+                        }
+                    }
+                }
+            }
+
+            if(showMethods)
+            {
+                for(Constructor<?> constructor : clazz.getDeclaredConstructors())
+                {
+                    StringBuilder ctorSignature = new StringBuilder("+" + clazz.getSimpleName() + "(");
+                    Class<?>[] paramTypes = constructor.getParameterTypes();
+                    for (int i = 0; i < paramTypes.length; i++) 
+                    {
+                        ctorSignature.append(paramTypes[i].getSimpleName());
+                        if (i < paramTypes.length - 1) ctorSignature.append(", ");
+                    }
+                    ctorSignature.append(")");
+                    element.addMethod(ctorSignature.toString());
+                }
+            }
+
+            Class<?> superClass = clazz.getSuperclass();
+            if(superClass != null && !shouldIgnore(superClass) && !superClass.equals(Object.class))
+            {
+                String superName= fullyQualifiedNames ? superClass.getName():superClass.getSimpleName();
+                relationships.add(new Relationship(name, superName, Relationship.Type.EXTENDS));
+            }
+
+            for(Class<?> interfaze : clazz.getInterfaces())
+            {
+                if(!shouldIgnore(interfaze))
+                {
+                    String interfazeName= fullyQualifiedNames ? interfaze.getName():interfaze.getSimpleName();
+                    relationships.add(new Relationship(name, interfazeName, Relationship.Type.IMPLEMENTS));
                 }
             }
 
             elements.add(element);
+            elementMap.put(name, element);
         }
 
         return elements;
@@ -203,7 +346,7 @@ class YumlFormatter implements DiagramFormatter
     public String format(List<DiagramElement> elements)
     {
         return elements.stream()
-            .map(e -> "[" + e.getName() + "]")
+            .map(DiagramElement::toYumlString)
             .collect(Collectors.joining(", "));
     }
 
