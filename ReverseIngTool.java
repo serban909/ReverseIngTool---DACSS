@@ -27,6 +27,8 @@ class DiagramElement
 {
     private final String name;
     private final boolean isInterface;
+    private final boolean isRelationship;
+    private final Relationship relationship;
     private final List<String> methods;
     private final List<String> fields;
 
@@ -34,6 +36,18 @@ class DiagramElement
     {
         this.name=name;
         this.isInterface=isInterface;
+        this.isRelationship=false;
+        this.relationship=null;
+        this.methods=new ArrayList<>();
+        this.fields=new ArrayList<>();
+    }
+
+    public DiagramElement(Relationship relationship)
+    {
+        this.name=null;
+        this.isInterface=false;
+        this.isRelationship=true;
+        this.relationship=relationship;
         this.methods=new ArrayList<>();
         this.fields=new ArrayList<>();
     }
@@ -53,20 +67,44 @@ class DiagramElement
         return name;
     }
 
-    public String toYumlString()
+    public boolean isRelationship()
     {
-        StringBuilder sb=new StringBuilder();
+        return isRelationship;
+    }
+
+    public Relationship getRelationship()
+    {
+        return relationship;
+    }
+
+    public String toYumlString() 
+    {
+        StringBuilder sb = new StringBuilder();
         sb.append("[");
-        if(isInterface) sb.append("<<interface>>;");
+        if (isInterface) sb.append("<<interface>>;");
         sb.append(name);
-        if(!fields.isEmpty() && !methods.isEmpty()) sb.append("|");
-        sb.append(String.join(";", fields));
-        if(!fields.isEmpty() && !methods.isEmpty()) sb.append(";");
-        sb.append(String.join(";", methods));
+    
+        if (!fields.isEmpty() || !methods.isEmpty()) sb.append("|");
+    
+        if (!fields.isEmpty()) 
+        {
+            sb.append(String.join(";", fields));
+        }
+    
+        if (!methods.isEmpty()) 
+        {
+            sb.append("|");
+            sb.append(String.join(";", methods));
+        }
+    
         sb.append("]");
         return sb.toString();
     }
-
+    
+    // separat factory ul de formate de relatii si exportarea de relatii, caz getComponent pt array si liste
+    // nu se ocupa relatia de format si relatia sa fie de diagram element nu de string
+    // diagram element contine si relatia
+    // factory ul sa fie cel care se ocupa de formatare si relatia sa nu contina tip de format
     public String toPlantUml()
     {
         StringBuilder sb=new StringBuilder();
@@ -151,48 +189,6 @@ class Relationship
         this.to = to;
         this.type=type;
     }
-
-    public String toYumlString()
-    {
-        String arrow;
-        switch(type)
-        {
-            case EXTENDS:
-                arrow= "^-";
-                break;
-            case IMPLEMENTS:
-                arrow= "^-.-";
-                break;
-            case ASSOCIATION:
-                arrow= "->";
-                break;
-            default:
-                throw new RuntimeException("Unexpected relationship type");
-        };
-
-        return "["+from + "]" + arrow + "[" + to+ "]";
-    }
-
-    public String toPlantUmlString()
-    {
-        String arrow;
-        switch (type) 
-        {
-            case EXTENDS:
-                arrow= " <|-- ";
-                break;
-            case IMPLEMENTS:
-                arrow= " <|.. ";
-                break;
-            case ASSOCIATION:
-                arrow=" --> ";
-                break;
-            default:
-                throw new RuntimeException("Unexpected relationship type");
-        };
-
-        return from + arrow + to + "\n";
-    }
 }
 
 class ClassAnalyzer
@@ -216,7 +212,6 @@ class ClassAnalyzer
     {
         List<DiagramElement> elements = new ArrayList<>();
         Map<String, DiagramElement> elementMap = new HashMap<>();
-        List<Relationship> relationships = new ArrayList<>();
 
         for( Class<?> clazz : classes )
         {
@@ -233,10 +228,23 @@ class ClassAnalyzer
                     element.addField("+"+field.getName()+":"+field.getType().getSimpleName());
 
                     Class<?> fieldType=field.getType();
-                    if(!shouldIgnore(fieldType))
+
+                    if(fieldType.isArray())
                     {
-                        String assocTo=fullyQualifiedNames ? fieldType.getName():fieldType.getSimpleName();
-                        relationships.add(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION));
+                        Class<?> componentType=fieldType.getComponentType();
+                        if(!shouldIgnore(componentType))
+                        {
+                            String assocTo = fullyQualifiedNames ? componentType.getName() : componentType.getSimpleName();
+                            elements.add(new DiagramElement(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION)));
+                        }
+                    }
+                    else
+                    {
+                        if(!shouldIgnore(fieldType))
+                        {
+                            String assocTo=fullyQualifiedNames ? fieldType.getName():fieldType.getSimpleName();
+                            elements.add(new DiagramElement(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION)));
+                        }
                     }
 
                     Type genericType=field.getGenericType();
@@ -251,7 +259,7 @@ class ClassAnalyzer
                                 if(!shouldIgnore(actualClass))
                                 {
                                     String assocTo=fullyQualifiedNames ? actualClass.getName():actualClass.getSimpleName();
-                                    relationships.add(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION));
+                                    elements.add(new DiagramElement(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION)));
                                 }
                             }
                         }
@@ -276,14 +284,21 @@ class ClassAnalyzer
                     methodSignature.append("):" + method.getReturnType().getSimpleName());
                     element.addMethod(methodSignature.toString());
 
-                    for(Class<?> paramType : method.getParameterTypes())
+                    for (Class<?> paramType : paramTypes) 
                     {
-                        if(!shouldIgnore(paramType))
+                        Class<?> assocClass = paramType;
+                        if (paramType.isArray()) 
                         {
-                            String assocTo=fullyQualifiedNames ? paramType.getName():paramType.getSimpleName();
-                            relationships.add(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION));
+                            assocClass = paramType.getComponentType();
+                        }
+                    
+                        if (!shouldIgnore(assocClass)) 
+                        {
+                            String assocTo = fullyQualifiedNames ? assocClass.getName() : assocClass.getSimpleName();
+                            elements.add(new DiagramElement(new Relationship(name, assocTo, Relationship.Type.ASSOCIATION)));
                         }
                     }
+                    
                 }
             }
 
@@ -307,7 +322,7 @@ class ClassAnalyzer
             if(superClass != null && !shouldIgnore(superClass) && !superClass.equals(Object.class))
             {
                 String superName= fullyQualifiedNames ? superClass.getName():superClass.getSimpleName();
-                relationships.add(new Relationship(name, superName, Relationship.Type.EXTENDS));
+                elements.add(new DiagramElement(new Relationship(name, superName, Relationship.Type.EXTENDS)));
             }
 
             for(Class<?> interfaze : clazz.getInterfaces())
@@ -315,7 +330,7 @@ class ClassAnalyzer
                 if(!shouldIgnore(interfaze))
                 {
                     String interfazeName= fullyQualifiedNames ? interfaze.getName():interfaze.getSimpleName();
-                    relationships.add(new Relationship(name, interfazeName, Relationship.Type.IMPLEMENTS));
+                    elements.add(new DiagramElement(new Relationship(name, interfazeName, Relationship.Type.IMPLEMENTS)));
                 }
             }
 
@@ -346,7 +361,30 @@ class YumlFormatter implements DiagramFormatter
     public String format(List<DiagramElement> elements)
     {
         return elements.stream()
-            .map(DiagramElement::toYumlString)
+            .map(e ->
+            {
+                if(e.isRelationship())
+                {
+                    Relationship r=e.getRelationship();
+                    String arrow;
+                    switch (r.type) 
+                    {
+                        case EXTENDS:
+                            arrow="^-";
+                            break;
+                        case IMPLEMENTS:
+                            arrow="^-.-";
+                            break;
+                        default:
+                            arrow="->";
+                    }
+                    return "[" + r.from + "]" + arrow + "[" + r.to + "]";
+                }
+                else
+                {
+                    return e.toYumlString();
+                }
+            })
             .collect(Collectors.joining(", "));
     }
 
@@ -365,7 +403,22 @@ class PlantUmlFormatter implements DiagramFormatter
 
         for(DiagramElement element : elements)
         {
-            sb.append(element.toPlantUml());
+            if(element.isRelationship())
+            {
+                Relationship r=element.getRelationship();
+                String arrow;
+                switch(r.type)
+                {
+                    case EXTENDS: arrow=" <|-- "; break;
+                    case IMPLEMENTS: arrow=" <|.. "; break;
+                    default: arrow=" --> ";
+                }
+                sb.append(r.from).append(arrow).append(r.to).append("\n");
+            }
+            else
+            {
+                sb.append(element.toPlantUml());
+            }
         }
 
         sb.append("@enduml\n");
